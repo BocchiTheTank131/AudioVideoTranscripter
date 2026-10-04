@@ -1,0 +1,43 @@
+{
+  "backend": "cpu",
+  "detected_device": {
+    "name": "Intel(R) Core(TM) i7-14700F",
+    "id": 0,
+    "gpu": false,
+    "memory_total": 34185383936,
+    "memory_free": 15818870784
+  },
+  "duration": 21.725875,
+  "language": "en",
+  "segments": 4,
+  "keywords": [
+    "local",
+    "application",
+    "application runs speech",
+    "runs speech recognition",
+    "speech recognition entirely",
+    "recordings stay private",
+    "export subtitles foucan",
+    "subtitles foucan provides",
+    "foucan provides acceleration",
+    "amd graphics cards"
+  ],
+  "stages": [
+    "Inspecting media",
+    "Preparing audio",
+    "Verifying model",
+    "Loading model",
+    "Transcribing",
+    "Extracting keywords",
+    "Building transcript",
+    "Exporting"
+  ],
+  "gui_timer_ticks": 67,
+  "max_gui_timer_gap_seconds": 0.078,
+  "models": [
+    "ggml-base.bin"
+  ],
+  "export_formats": 8,
+  "offline": true,
+  "warnings": []
+}

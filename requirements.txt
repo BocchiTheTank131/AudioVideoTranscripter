@@ -1,0 +1,4 @@
+PySide6>=6.7,<7
+psutil>=6,<8
+platformdirs>=4,<5
+requests>=2.32,<3

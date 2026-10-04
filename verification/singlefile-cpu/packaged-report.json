@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "error": "",
+  "stages": [
+    "Inspecting media",
+    "Preparing audio",
+    "Verifying model",
+    "Loading model",
+    "Transcribing",
+    "Extracting keywords",
+    "Building transcript",
+    "Exporting"
+  ],
+  "offline": true,
+  "gui_timer_ticks": 109,
+  "max_gui_timer_gap_seconds": 0.032000000000152795,
+  "backend": "cpu",
+  "segments": 6,
+  "device": {
+    "name": "Intel(R) Core(TM) i7-14700F",
+    "id": 0,
+    "gpu": false,
+    "memory_total": 34185383936,
+    "memory_free": 16040456192
+  },
+  "warnings": [],
+  "resource_root": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000033f42",
+  "ffmpeg": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000033f42\\tools\\ffmpeg.exe",
+  "ffprobe": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000033f42\\tools\\ffprobe.exe",
+  "executable": "C:\\Users\\Win\\Downloads\\LocalTranscriber-single-file-test\\exe-alone\\LocalTranscriber.exe",
+  "working_directory": "C:\\Users\\Win\\Downloads\\LocalTranscriber-single-file-test\\exe-alone",
+  "path_contains_only_windows_system32": true,
+  "self_extracted_runtime_cleaned": true,
+  "wall_seconds_including_extraction": 8.109
+}

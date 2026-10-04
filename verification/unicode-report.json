@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "unicode_model_path": true,
+  "unicode_audio_cache_path": true,
+  "offline": true,
+  "backend": "vulkan",
+  "segments": 4
+}

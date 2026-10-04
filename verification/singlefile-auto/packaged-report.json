@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "error": "",
+  "stages": [
+    "Inspecting media",
+    "Preparing audio",
+    "Verifying model",
+    "Loading model",
+    "Transcribing",
+    "Extracting keywords",
+    "Building transcript",
+    "Exporting"
+  ],
+  "offline": true,
+  "gui_timer_ticks": 111,
+  "max_gui_timer_gap_seconds": 0.04700000000048021,
+  "backend": "vulkan",
+  "segments": 6,
+  "device": {
+    "name": "AMD Radeon RX 9060 XT",
+    "id": 0,
+    "gpu": true,
+    "memory_total": 17095983104,
+    "memory_free": 16168480768
+  },
+  "warnings": [],
+  "resource_root": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000069ec2",
+  "ffmpeg": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000069ec2\\tools\\ffmpeg.exe",
+  "ffprobe": "C:\\Users\\Win\\AppData\\Local\\Temp\\_MEI000069ec2\\tools\\ffprobe.exe",
+  "executable": "C:\\Users\\Win\\Downloads\\LocalTranscriber-single-file-test\\exe-alone\\LocalTranscriber.exe",
+  "working_directory": "C:\\Users\\Win\\Downloads\\LocalTranscriber-single-file-test\\exe-alone",
+  "path_contains_only_windows_system32": true,
+  "self_extracted_runtime_cleaned": true,
+  "wall_seconds_including_extraction": 8.063
+}

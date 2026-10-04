@@ -1,0 +1,27 @@
+{
+  "success": true,
+  "error": "",
+  "stages": [
+    "Inspecting media",
+    "Preparing audio",
+    "Verifying model",
+    "Loading model",
+    "Transcribing",
+    "Extracting keywords",
+    "Building transcript",
+    "Exporting"
+  ],
+  "offline": true,
+  "gui_timer_ticks": 37,
+  "max_gui_timer_gap_seconds": 0.0319999999992433,
+  "backend": "vulkan",
+  "segments": 6,
+  "device": {
+    "name": "AMD Radeon RX 9060 XT",
+    "id": 0,
+    "gpu": true,
+    "memory_total": 17095983104,
+    "memory_free": 16165400576
+  },
+  "warnings": []
+}

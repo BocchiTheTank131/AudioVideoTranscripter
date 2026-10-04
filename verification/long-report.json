@@ -1,0 +1,9 @@
+{
+  "duration": 325.887812,
+  "segments": 49,
+  "inference_pipeline_seconds": 5.516000000000531,
+  "progress_callbacks": 17,
+  "monotone_progress": true,
+  "last_segment_end": 325.25,
+  "cancel_pipeline_seconds": 0.5469999999995707
+}

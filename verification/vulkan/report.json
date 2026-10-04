@@ -1,0 +1,43 @@
+{
+  "backend": "vulkan",
+  "detected_device": {
+    "name": "AMD Radeon RX 9060 XT",
+    "id": 0,
+    "gpu": true,
+    "memory_total": 17095983104,
+    "memory_free": 16165400576
+  },
+  "duration": 21.725875,
+  "language": "en",
+  "segments": 6,
+  "keywords": [
+    "local",
+    "application",
+    "application runs speech",
+    "runs speech recognition",
+    "speech recognition entirely",
+    "recordings stay private",
+    "export subtitles foucan",
+    "subtitles foucan provides",
+    "foucan provides acceleration",
+    "amd graphics cards"
+  ],
+  "stages": [
+    "Inspecting media",
+    "Preparing audio",
+    "Verifying model",
+    "Loading model",
+    "Transcribing",
+    "Extracting keywords",
+    "Building transcript",
+    "Exporting"
+  ],
+  "gui_timer_ticks": 37,
+  "max_gui_timer_gap_seconds": 0.062,
+  "models": [
+    "ggml-base.bin"
+  ],
+  "export_formats": 8,
+  "offline": true,
+  "warnings": []
+}
