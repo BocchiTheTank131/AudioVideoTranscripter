@@ -31,6 +31,7 @@ def card():
 
 class DropArea(QFrame):
     file_dropped = Signal(str)
+    files_dropped = Signal(object)
     browse = Signal()
 
     def __init__(self):
@@ -58,7 +59,7 @@ class DropArea(QFrame):
         if self.isEnabled():
             paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
             if paths:
-                self.file_dropped.emit(paths[0])
+                self.files_dropped.emit(paths) if len(paths) > 1 else self.file_dropped.emit(paths[0])
                 event.acceptProposedAction()
 
 

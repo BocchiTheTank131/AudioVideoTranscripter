@@ -7,12 +7,13 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QTabWidget, QWidget,
                               QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QTableWidget,
                               QTableWidgetItem, QHeaderView, QDialogButtonBox, QFileDialog, QMessageBox,
-                              QProgressBar, QInputDialog, QScrollArea)
+                              QProgressBar, QInputDialog, QScrollArea, QPlainTextEdit)
 from transcription.models import CATALOG
 from hardware.detection import LABELS, sensible_threads
 from utils.optional_models import download_optional, ESTIMATES
 from .widgets import label, button, size
 from .workers import Job
+from utils.paths import resource_root
 
 
 class SettingsDialog(QDialog):
@@ -42,12 +43,19 @@ class SettingsDialog(QDialog):
         general.addRow(button('Open logs folder', lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.logs)))))
         transcription = self.form_tab('Transcription')
         self.field(transcription, 'Default model', 'model', list(CATALOG))
-        self.field(transcription, 'Default language', 'language', ['auto'] + sorted(json.loads((Path(__file__).parents[1] / 'transcription/languages.json').read_text('utf-8'))))
+        self.field(transcription, 'Default language', 'language', ['auto'] + sorted(json.loads((resource_root() / 'transcription/languages.json' if getattr(__import__('sys'), 'frozen', False) else Path(__file__).parents[1] / 'transcription/languages.json').read_text('utf-8'))))
         threads = self.field(transcription, 'CPU threads · 0 = automatic', 'threads', (0, 256))
         threads.setToolTip(f'Automatic uses {sensible_threads()} threads on this system.')
         self.field(transcription, 'Beam size', 'beam_size', (1, 20))
         self.field(transcription, 'Temperature', 'temperature', (0.0, 1.0))
         self.field(transcription, 'Word timestamps', 'words', 'check')
+        self.field(transcription, 'Voice activity detection', 'vad', 'check')
+        self.field(transcription, 'Automatically clean obvious hallucinations', 'auto_clean', 'check')
+        transcription.addRow(label('Cleanup retries only pathological repetition once; raw cues remain in project files.', 'muted'))
+        self.field(transcription, 'Merge short segments', 'merge_short', 'check')
+        self.field(transcription, 'Maximum silence gap (seconds)', 'merge_gap', ['0.5', '1.0', '2.0'])
+        self.fields['merge_gap'].setCurrentText(str(self.settings.merge_gap))
+        self.field(transcription, 'Maximum subtitle characters', 'subtitle_chars', (20, 240))
         hardware = self.form_tab('Hardware')
         acceleration = self.field(hardware, 'Default acceleration', 'acceleration', list(LABELS))
         for index, name in enumerate(LABELS):
@@ -68,13 +76,19 @@ class SettingsDialog(QDialog):
         explanation = label('CUDA requires NVIDIA. Vulkan supports AMD, NVIDIA and compatible Intel GPUs.\nHIP is optional and requires a compatible ROCm build.\nRuntime probes enumerate actual devices; unavailable choices cannot start inference.', 'muted')
         explanation.setWordWrap(True)
         hardware.addRow(explanation)
+        from utils.diagnostics import diagnostics
+        self.diagnostics_text = QPlainTextEdit(diagnostics(paths, backends, include_ffmpeg=False))
+        self.diagnostics_text.setReadOnly(True)
+        self.diagnostics_text.setMinimumHeight(200)
+        hardware.addRow(self.diagnostics_text)
+        hardware.addRow(button('Copy diagnostics', self.copy_diagnostics))
         model_page = QWidget()
         model_layout = QVBoxLayout(model_page)
         model_layout.addWidget(label('Downloads occur only for the model you request. Every model is SHA-256 verified.', 'muted'))
         self.model_table = QTableWidget(len(CATALOG), 4)
         self.model_table.setHorizontalHeaderLabels(['Model', 'Disk / state', 'Path', 'Manage'])
         self.model_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.model_table.setColumnWidth(3, 215)
+        self.model_table.setColumnWidth(3, 285)
         self.model_table.verticalHeader().hide()
         self.model_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         model_layout.addWidget(self.model_table)
@@ -84,6 +98,9 @@ class SettingsDialog(QDialog):
         optional_info = label('Optional dependencies run in a separate Python process. Normal transcription needs neither.\nCommunity-1 requires accepting its Hugging Face conditions; inference stays local.\nAI keywords use an English embedding model. The frequency method needs no downloads.', 'muted')
         optional_info.setWordWrap(True)
         advanced.addRow(optional_info)
+        advanced.addRow(button('Install speaker diarization support…', lambda: self.install_support('diarization')))
+        advanced.addRow(button('Install keyword extraction support…', lambda: self.install_support('keywords')))
+        advanced.addRow(button('Install VAD support…', self.install_vad))
         self.path_field(advanced, 'Optional environment · python.exe', 'optional_python')
         self.path_field(advanced, 'Community-1 local folder', 'diarization_path', directory=True)
         advanced.addRow(button('Download Community-1…', lambda: self.optional_download('diarization')))
@@ -129,7 +146,7 @@ class SettingsDialog(QDialog):
         elif isinstance(type, list):
             widget = QComboBox()
             widget.addItems(type)
-            widget.setCurrentText(value)
+            widget.setCurrentText(str(value))
         elif isinstance(type[0], float):
             widget = QDoubleSpinBox()
             widget.setRange(*type)
@@ -164,8 +181,12 @@ class SettingsDialog(QDialog):
         for row, (name, info) in enumerate(CATALOG.items()):
             installed = self.models.installed(name)
             self.model_table.setItem(row, 0, QTableWidgetItem(name))
-            self.model_table.setItem(row, 1, QTableWidgetItem(size(info['size']) + (' · Installed' if installed else ' · Download needed')))
-            self.model_table.setItem(row, 2, QTableWidgetItem(str(self.models.path(name))))
+            verified = self.models.verification_state(name)
+            state = (' · SHA-256 verified ✓' if verified.get('valid') else ' · Verification failed' if verified else ' · Not yet verified') if installed else ''
+            self.model_table.setItem(row, 1, QTableWidgetItem(size(info['size']) + (' · Installed ✓' if installed else ' · Download needed') + state))
+            path_item = QTableWidgetItem(str(self.models.path(name)))
+            path_item.setToolTip(str(self.models.path(name)) + '\nExpected SHA-256: ' + info['sha256'] + ('\nLast verified: ' + __import__('datetime').datetime.fromtimestamp(verified['checked_at']).isoformat(timespec='seconds') if verified else ''))
+            self.model_table.setItem(row, 2, path_item)
             controls = QWidget()
             layout = QHBoxLayout(controls)
             layout.setContentsMargins(2, 2, 2, 2)
@@ -174,6 +195,7 @@ class SettingsDialog(QDialog):
             delete.setEnabled(installed and not self.models.busy(name))
             download.setEnabled(not self.models.busy(name))
             layout.addWidget(download)
+            layout.addWidget(button('Folder', lambda checked=False, n=name: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.models.path(n).parent)))))
             layout.addWidget(delete)
             self.model_actions.extend([download, delete])
             self.model_table.setCellWidget(row, 3, controls)
@@ -194,7 +216,7 @@ class SettingsDialog(QDialog):
         self.job = Job(action, self)
         self.job.event.connect(self.show_progress)
         self.job.result.connect(success)
-        self.job.error.connect(lambda message: QMessageBox.warning(self, 'Download failed', message))
+        self.job.error.connect(lambda message: QMessageBox.warning(self, 'Setup could not finish', message.splitlines()[0]))
         self.job.cancelled.connect(lambda: self.progress_label.setText('Cancelled · incomplete downloads removed'))
         self.job.finished.connect(self.finished)
         self.tabs.setEnabled(False)
@@ -219,6 +241,24 @@ class SettingsDialog(QDialog):
             with self.models.lease(name):
                 return self.models.ensure(name, cancel, progress)
         self.begin(action, lambda _: self.progress_label.setText(f'{name} installed and verified'))
+
+    def install_vad(self):
+        from transcription.vad import download
+        if QMessageBox.question(self, 'Local VAD model', 'Download the 0.9 MB Silero VAD model? No additional Python dependencies are needed.') == QMessageBox.StandardButton.Yes:
+            self.begin(lambda cancel, progress: download(self.paths.models / 'vad', cancel, progress), lambda _: self.progress_label.setText('Silero VAD installed and verified'))
+
+    def install_support(self, kind):
+        from utils.optional_runtime import install
+        if QMessageBox.question(self, 'Install optional support', f'Install {kind} in an isolated application-managed Python environment?\nPython and dependencies may download 2–6 GB. AI model weights download separately only when requested.') != QMessageBox.StandardButton.Yes:
+            return
+        self.begin(lambda cancel, progress: install(kind, self.paths, cancel, progress),
+                   lambda python: (self.fields['optional_python'].setText(python), self.progress_label.setText('Support installed. Save settings to use it.')))
+
+    def copy_diagnostics(self):
+        from utils.diagnostics import diagnostics
+        from PySide6.QtWidgets import QApplication
+        self.begin(lambda cancel, progress: diagnostics(self.paths, self.backends),
+                   lambda text: (self.diagnostics_text.setPlainText(text), QApplication.clipboard().setText(text), self.progress_label.setText('Diagnostics copied; no transcript, tokens or personal source paths.')))
 
     def optional_download(self, kind):
         if QMessageBox.question(self, 'Optional model download', f'Download {kind} model?\n{ESTIMATES[kind]}\nOnly model files are downloaded. No user content is uploaded.') != QMessageBox.StandardButton.Yes:
@@ -251,11 +291,16 @@ class SettingsDialog(QDialog):
             self.progress_label.setText('Cancelling…')
 
     def save(self):
+        previous = {key: getattr(self.settings, key) for key in ('model', 'beam_size', 'temperature', 'words', 'vad')}
         for key, widget in self.fields.items():
             value = widget.isChecked() if isinstance(widget, QCheckBox) else widget.currentText() if isinstance(widget, QComboBox) else widget.value() if isinstance(widget, (QSpinBox, QDoubleSpinBox)) else widget.text().strip()
             if key == 'acceleration':
                 value = widget.currentData()
+            if key == 'merge_gap':
+                value = float(value)
             setattr(self.settings, key, value)
+        if any(getattr(self.settings, key) != value for key, value in previous.items()):
+            self.settings.preset = 'custom'
         if self.settings.phrase_min > self.settings.phrase_max:
             QMessageBox.warning(self, 'Phrase length', 'Minimum phrase length must not exceed maximum phrase length.')
             return

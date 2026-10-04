@@ -81,6 +81,13 @@ class ResourceMonitor:
         memory = psutil.virtual_memory()
         result = dict(cpu=psutil.cpu_percent(), ram_used=memory.used, ram_total=memory.total,
                       app_ram=psutil.Process().memory_info().rss, gpu=None, vram_used=None, temperature=None)
+        processes = [psutil.Process()] + psutil.Process().children(recursive=True)
+        result['job_ram'] = 0
+        for process in processes:
+            try:
+                result['job_ram'] += process.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         if self.windows:
             try:
                 result.update(self.windows.sample())

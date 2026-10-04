@@ -32,7 +32,7 @@ def setup_pipeline(tmp_path, monkeypatch):
 
 def test_missing_optional_models_preserve_core_transcript(tmp_path, monkeypatch):
     paths, settings, manager, backends = setup_pipeline(tmp_path, monkeypatch)
-    options = Options(diarization=True, keywords=True, keyword_method='ai')
+    options = Options(diarization=True, keywords=True, keyword_method='ai', vad=False)
     result = pipeline.transcribe('test.mp4', options, paths, settings, manager, backends, Cancellation(), lambda e: None)
     assert result.segments[0].text.startswith('Local speech')
     assert len(result.warnings) == 2
@@ -48,7 +48,7 @@ def test_optional_worker_failure_does_not_hide_transcript(tmp_path, monkeypatch)
     model.mkdir()
     def fail(*args): raise AppError('Optional requirements missing')
     monkeypatch.setattr(pipeline, 'run_json_worker', fail)
-    result = pipeline.transcribe('test.mp4', Options(diarization=True, diarization_path=str(model)), paths, settings, manager, backends, Cancellation(), lambda e: None)
+    result = pipeline.transcribe('test.mp4', Options(diarization=True, diarization_path=str(model), vad=False), paths, settings, manager, backends, Cancellation(), lambda e: None)
     assert result.segments
     assert 'requirements missing' in result.warnings[0]
     assert result.segments[0].speaker is None

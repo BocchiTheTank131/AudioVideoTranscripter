@@ -35,7 +35,7 @@ def render(transcript, format, timestamps=True, speakers=True):
         return json.dumps(transcript.to_dict(), ensure_ascii=False, indent=2) + '\n'
     if format in ('srt', 'vtt'):
         blocks = ['WEBVTT\n'] if format == 'vtt' else []
-        for i, segment in enumerate(transcript.segments, 1):
+        for i, segment in enumerate((s for s in transcript.segments if s.text.strip()), 1):
             # Blank lines end a subtitle cue. Keep multiline edits within the cue.
             text = '\n'.join(line for line in segment.text.splitlines() if line.strip()).replace('-->', '→')
             name = speaker_name(transcript, segment) if speakers else ''

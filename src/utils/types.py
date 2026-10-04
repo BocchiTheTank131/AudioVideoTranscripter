@@ -17,6 +17,12 @@ class Segment:
     speaker: str | None = None
     words: list[dict] = field(default_factory=list)
     confidence: float | None = None
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
+    compression_ratio: float | None = None
+    tokens: list[dict] = field(default_factory=list)
+    quality_flags: list[str] = field(default_factory=list)
+    source_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -32,6 +38,9 @@ class Transcript:
     backend: str = "cpu"
     warnings: list[str] = field(default_factory=list)
     speaker_names: dict[str, str] = field(default_factory=dict)
+    raw_segments: list[Segment] = field(default_factory=list)
+    cleanup: dict = field(default_factory=dict)
+    transcription_settings: dict = field(default_factory=dict)
 
     def to_dict(self):
         data = asdict(self)
@@ -66,3 +75,10 @@ class Options:
     diversity: float = 0.5
     keyword_path: str = ""
     keep_temp: bool = False
+    vad: bool = True
+    vad_path: str = ""
+    auto_clean: bool = False
+    merge_short: bool = False
+    merge_gap: float = .5
+    subtitle_chars: int = 84
+    preset: str = "custom"

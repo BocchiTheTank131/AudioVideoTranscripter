@@ -5,6 +5,7 @@ from .engine import TranscriptionBackend
 from hardware.detection import sensible_threads
 from utils.process import run_stream
 from utils.types import AppError, Segment
+from .quality import flag
 
 
 def tokens_to_words(tokens):
@@ -51,7 +52,9 @@ class WhisperCppBackend(TranscriptionBackend):
                 '--translate', int(options.task == 'translate'), '--words', int(options.words),
                 '--beam', options.beam_size, '--temperature', options.temperature,
                 '--suppress', int(options.suppress_non_speech)]
-        result = {'segments': [], 'language': options.language}
+        if options.vad and options.vad_path:
+            args += ['--vad-model', options.vad_path]
+        result = {'segments': [], 'language': options.language, 'warnings': []}
         completed = False
 
         def read(line):
@@ -65,13 +68,19 @@ class WhisperCppBackend(TranscriptionBackend):
                 raise AppError(event['message'])
             if kind == 'segment':
                 segment = Segment(max(0, event['start']), max(event['start'], event['end']), event['text'].strip(),
-                                  words=tokens_to_words(event.get('tokens', [])), confidence=event.get('confidence'))
+                                  words=tokens_to_words(event.get('tokens', [])) if options.words else [], confidence=event.get('confidence'),
+                                  avg_logprob=event.get('avg_logprob'), no_speech_prob=event.get('no_speech_probability'),
+                                  tokens=event.get('tokens', []))
+                flag(segment)
                 if segment.text:
                     result['segments'].append(segment)
                     on_event({'event': 'segment', 'segment': segment})
             elif kind == 'done':
                 result.update(language=event['language'], duration=event['duration'])
                 completed = True
+            elif kind == 'warning':
+                result['warnings'].append(event['message'])
+                on_event(event)
             else:
                 on_event(event)
         run_stream(args, self.cancellation, read)

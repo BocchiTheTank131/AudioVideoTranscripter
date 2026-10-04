@@ -18,6 +18,30 @@ class ModelManager:
         self.directory.mkdir(parents=True, exist_ok=True)
         self._busy = set()
         self._lock = threading.Lock()
+        self.verification_file = self.directory / 'verification.json'
+        try:
+            self.verification = json.loads(self.verification_file.read_text('utf-8'))
+        except (OSError, ValueError):
+            self.verification = {}
+
+    def verification_state(self, name):
+        path = self.path(name)
+        state = self.verification.get(name, {})
+        if not path.exists() or state.get('mtime_ns') != path.stat().st_mtime_ns or state.get('size') != path.stat().st_size:
+            return {}
+        return state
+
+    def record_verification(self, name, valid):
+        path = self.path(name)
+        with self._lock:
+            self.verification[name] = dict(valid=valid, sha256=CATALOG[name]['sha256'] if valid else None,
+                                          checked_at=time.time(), size=path.stat().st_size, mtime_ns=path.stat().st_mtime_ns)
+            temp = self.verification_file.with_suffix('.tmp')
+            try:
+                temp.write_text(json.dumps(self.verification, indent=2), 'utf-8')
+                temp.replace(self.verification_file)
+            except OSError:
+                log.exception('Could not persist model verification state')
 
     def path(self, name):
         if name not in CATALOG:
@@ -65,7 +89,9 @@ class ModelManager:
                 done += len(block)
                 if progress:
                     progress({'stage': 'Verifying model', 'fraction': done / size})
-        return digest.hexdigest() == CATALOG[name]['sha256']
+        valid = digest.hexdigest() == CATALOG[name]['sha256']
+        self.record_verification(name, valid)
+        return valid
 
     def ensure(self, name, cancel, progress):
         if self.verify(name, cancel, progress):
@@ -96,6 +122,7 @@ class ModelManager:
             if done != info['size'] or digest.hexdigest() != info['sha256']:
                 raise AppError('Model download failed integrity verification. Please try the download again.')
             partial.replace(target)
+            self.record_verification(name, True)
             return target
         except requests.RequestException as exc:
             log.exception('Model download failed')

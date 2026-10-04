@@ -1,0 +1,2 @@
+VERSION = '1.1.0'
+WHISPER_VERSION = '1.8.3'

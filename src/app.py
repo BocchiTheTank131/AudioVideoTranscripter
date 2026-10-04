@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import Qt, QLockFile
 from utils.paths import Paths
+from utils.version import VERSION
 
 
 def main():
@@ -12,6 +13,7 @@ def main():
     os.environ.setdefault('PYANNOTE_METRICS_ENABLED', '0')
     app = QApplication(sys.argv)
     app.setApplicationName('Local Transcriber')
+    app.setApplicationVersion(VERSION)
     app.setOrganizationName('LocalTranscriber')
     try:
         paths = Paths()
@@ -34,9 +36,12 @@ def main():
             parser.add_argument('--verify-output', required=True)
             parser.add_argument('--verify-backend', default='auto')
             parser.add_argument('--verify-offline', action='store_true')
+            parser.add_argument('--verify-model', default='base')
+            parser.add_argument('--verify-workflow', action='store_true')
+            parser.add_argument('--verify-project')
             args = parser.parse_args()
             from ui.verification import start_verification
-            start_verification(window, args.verify_media, args.verify_output, args.verify_backend, args.verify_offline)
+            start_verification(window, args.verify_media, args.verify_output, args.verify_backend, args.verify_offline, args.verify_model, args.verify_workflow, args.verify_project)
         return app.exec()
     except Exception as exc:
         logging.exception('Startup failed')

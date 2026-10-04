@@ -15,7 +15,10 @@ class Paths:
         self.cache = self.root / 'cache'
         self.logs = self.root / 'logs'
         self.backends = self.root / 'backends'
-        for path in (self.root, self.models, self.cache, self.logs, self.backends):
+        self.runtime = self.root / 'runtime'
+        self.projects = self.root / 'projects'
+        self.history = self.root / 'history.sqlite3'
+        for path in (self.root, self.models, self.cache, self.logs, self.backends, self.runtime, self.projects):
             path.mkdir(parents=True, exist_ok=True)
         self.settings = self.root / 'settings.json'
 

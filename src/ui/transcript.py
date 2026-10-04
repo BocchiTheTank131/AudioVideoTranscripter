@@ -1,12 +1,15 @@
 from collections import defaultdict
+from dataclasses import replace
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QTextBlockUserData, QTextCursor, QTextDocument
+from PySide6.QtGui import QTextBlockUserData, QTextCursor, QTextDocument, QColor, QBrush, QKeyEvent
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QCheckBox,
                               QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView,
                               QStackedWidget, QLineEdit, QMessageBox, QInputDialog, QDialog,
                               QDialogButtonBox, QFormLayout)
 from exporters.formats import timestamp, plain, speaker_name
 from utils.types import Segment
+from transcription.quality import confidence_label
+from local_workflow.search import matches
 from .widgets import label, button
 
 
@@ -41,13 +44,17 @@ def collect_plain_edits(document, segments):
         original = segments[index]
         next_index = indices[pos + 1] if pos + 1 < len(indices) else len(segments)
         stop = segments[max(index, next_index - 1)].end
-        result.append(Segment(original.start, stop, text, original.speaker,
-                              original.words if text == original.text else [], original.confidence if text == original.text else None))
+        result.append(replace(original, end=stop, text=text,
+                              words=original.words if text == original.text else [], confidence=original.confidence if text == original.text else None,
+                              avg_logprob=original.avg_logprob if text == original.text else None,
+                              tokens=original.tokens if text == original.text else [],
+                              source_ids=[identifier for s in segments[index:next_index] for identifier in s.source_ids]))
     return result
 
 
 class TranscriptView(QWidget):
     changed = Signal()
+    seek_requested = Signal(float)
 
     def __init__(self):
         super().__init__()
@@ -55,6 +62,10 @@ class TranscriptView(QWidget):
         self.dirty = False
         self.rendering = False
         self.current_mode = 0
+        self.search_index = -1
+        self.search_matches = []
+        self.follow_suspended = False
+        self.live = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
@@ -66,10 +77,17 @@ class TranscriptView(QWidget):
         self.wrap = QCheckBox('Wrap')
         self.wrap.setChecked(True)
         top.addWidget(self.wrap)
+        self.follow = QCheckBox('Follow live transcription')
+        self.follow.setChecked(True)
+        top.addWidget(self.follow)
+        self.show_confidence = QCheckBox('Show confidence')
+        top.addWidget(self.show_confidence)
         layout.addLayout(top)
         self.stack = QStackedWidget()
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['Time', 'Speaker', 'Text · double-click to edit'])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['Time', 'Speaker', 'Text · double-click to edit', 'Quality'])
+        self.table.setColumnHidden(3, True)
+        self.table.setColumnWidth(3, 145)
         self.table.setColumnWidth(0, 108)
         self.table.setColumnWidth(1, 105)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -89,7 +107,10 @@ class TranscriptView(QWidget):
         self.replace_text = QLineEdit()
         self.replace_text.setPlaceholderText('Replace with…')
         search.addWidget(self.find_text)
-        search.addWidget(button('Find', self.find))
+        search.addWidget(button('Previous', lambda: self.find(backward=True)))
+        search.addWidget(button('Next', self.find))
+        self.match_count = label('0 matches', 'muted')
+        search.addWidget(self.match_count)
         search.addWidget(self.replace_text)
         search.addWidget(button('Replace all', self.replace_all))
         layout.addLayout(search)
@@ -107,6 +128,13 @@ class TranscriptView(QWidget):
         self.mode.currentIndexChanged.connect(self.switch_mode)
         self.wrap.toggled.connect(self.set_wrap)
         self.find_text.returnPressed.connect(self.find)
+        self.find_text.textChanged.connect(self.update_search)
+        self.find_text.installEventFilter(self)
+        self.show_confidence.toggled.connect(lambda shown: self.table.setColumnHidden(3, not shown))
+        self.table.cellClicked.connect(lambda row, col: self.seek_requested.emit(self.transcript.segments[row].start) if col == 0 and self.transcript else None)
+        for widget in (self.table, self.editor):
+            widget.verticalScrollBar().valueChanged.connect(lambda value, w=widget: self.scroll_changed(w))
+        self.follow.toggled.connect(lambda enabled: setattr(self, 'follow_suspended', False))
         self.table.cellDoubleClicked.connect(self.edit_time)
         self.set_editable(False)
 
@@ -124,6 +152,8 @@ class TranscriptView(QWidget):
 
     def set_transcript(self, transcript, editable=True):
         self.transcript = transcript
+        self.live = not editable
+        self.follow_suspended = False
         self.dirty = False
         self.set_editable(editable)
         self.render()
@@ -141,23 +171,26 @@ class TranscriptView(QWidget):
             self.table.setRowCount(len(segments))
             for i, segment in enumerate(segments):
                 time_item = QTableWidgetItem(timestamp(segment.start))
-                time_item.setToolTip(timestamp(segment.start) + ' → ' + timestamp(segment.end) + '\nDouble-click to edit cue timing')
+                time_item.setToolTip(timestamp(segment.start) + ' → ' + timestamp(segment.end) + '\nClick to seek source; double-click to edit cue timing')
                 time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(i, 0, time_item)
                 speaker_item = QTableWidgetItem(speaker_name(self.transcript, segment))
                 speaker_item.setFlags(speaker_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(i, 1, speaker_item)
                 self.table.setItem(i, 2, QTableWidgetItem(segment.text))
+                self.decorate_row(i, segment)
             self.table.resizeRowsToContents()
             self.editor.setPlainText('\n'.join(s.text.replace('\n', '\u2028') for s in segments))
             block = self.editor.document().begin()
             for i in range(len(segments)):
                 block.setUserData(CueData(i))
                 block = block.next()
-            self.info.setText(f'{len(segments):,} cues · {self.transcript.language.upper()}')
+            suspicious = sum(bool(s.quality_flags) for s in segments)
+            self.info.setText(f'{len(segments):,} cues · {self.transcript.language.upper()}' + (f' · ⚠ {suspicious} to review' if suspicious else ''))
             self.rename_button.setEnabled(self.editable and any(s.speaker for s in segments))
         finally:
             self.rendering = False
+        self.update_search()
 
     def sync(self):
         if not self.transcript or not self.dirty:
@@ -169,6 +202,10 @@ class TranscriptView(QWidget):
                     segment.text = item.text()
                     segment.words = []
                     segment.confidence = None
+                    segment.avg_logprob = None
+                    segment.tokens = []
+                    from transcription.quality import flag
+                    flag(segment)
         else:
             self.transcript.segments = collect_plain_edits(self.editor.document(), self.transcript.segments)
         self.dirty = False
@@ -184,19 +221,48 @@ class TranscriptView(QWidget):
             return
         self.transcript.segments.append(segment)
         self.rendering = True
+        table_position = self.table.verticalScrollBar().value()
+        editor_position = self.editor.verticalScrollBar().value()
+        follow = self.follow.isChecked() and not self.follow_suspended
         try:
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(timestamp(segment.start)))
             self.table.setItem(row, 1, QTableWidgetItem(segment.speaker or ''))
             self.table.setItem(row, 2, QTableWidgetItem(segment.text))
+            self.decorate_row(row, segment)
             self.table.resizeRowToContents(row)
-            self.table.scrollToBottom()
+            if follow:
+                self.table.scrollToBottom()
             self.editor.append(segment.text.replace('\n', '\u2028'))
             self.editor.document().lastBlock().setUserData(CueData(row))
+            if follow:
+                self.editor.verticalScrollBar().setValue(self.editor.verticalScrollBar().maximum())
+            else:
+                self.table.verticalScrollBar().setValue(table_position)
+                self.editor.verticalScrollBar().setValue(editor_position)
             self.info.setText(f'{row + 1:,} cues · live')
         finally:
             self.rendering = False
+
+    def scroll_changed(self, widget):
+        if not self.rendering and self.live:
+            bar = widget.verticalScrollBar()
+            self.follow_suspended = bar.maximum() - bar.value() > 4
+
+    def decorate_row(self, row, segment):
+        warning = bool(segment.quality_flags)
+        self.table.item(row, 0).setText(('⚠ ' if warning else '') + timestamp(segment.start))
+        item = QTableWidgetItem(confidence_label(segment))
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        details = '\n'.join(segment.quality_flags)
+        for key in ('avg_logprob', 'no_speech_prob', 'compression_ratio'):
+            value = getattr(segment, key)
+            if value is not None:
+                details += f'\n{key}: {value:.3f}'
+        self.table.item(row, 2).setToolTip(details.strip())
+        item.setToolTip(details.strip() + '\nToken probability is not a calibrated accuracy score.')
+        self.table.setItem(row, 3, item)
 
     def set_wrap(self, enabled):
         self.editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth if enabled else QTextEdit.LineWrapMode.NoWrap)
@@ -209,22 +275,53 @@ class TranscriptView(QWidget):
             from PySide6.QtWidgets import QApplication
             QApplication.clipboard().setText(plain(self.transcript, self.current_mode == 0, True))
 
-    def find(self):
-        needle = self.find_text.text()
-        if not needle:
+    def update_search(self):
+        texts = [self.table.item(i, 2).text() for i in range(self.table.rowCount())] if self.current_mode == 0 else [self.editor.toPlainText()]
+        self.search_matches = matches(texts, self.find_text.text())
+        self.search_index = -1
+        self.match_count.setText(f'{len(self.search_matches)} matches')
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 2).setBackground(QBrush())
+        if self.current_mode == 0:
+            for row, _, _ in self.search_matches:
+                self.table.item(row, 2).setBackground(QColor(145, 115, 30, 85))
+        selections = []
+        for _, start, end in self.search_matches if self.current_mode == 1 else []:
+            selection = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(self.editor.document())
+            text = texts[0]
+            cursor.setPosition(len(text[:start].encode('utf-16-le')) // 2)
+            cursor.setPosition(len(text[:end].encode('utf-16-le')) // 2, QTextCursor.MoveMode.KeepAnchor)
+            selection.cursor = cursor
+            selection.format.setBackground(QColor(145, 115, 30, 110))
+            selections.append(selection)
+        self.editor.setExtraSelections(selections)
+
+    def find(self, checked=False, backward=False):
+        if not self.search_matches:
+            self.update_search()
+        if not self.search_matches:
             return
-        if self.current_mode == 1:
-            if not self.editor.find(needle):
-                self.editor.moveCursor(QTextCursor.MoveOperation.Start)
-                self.editor.find(needle)
+        self.search_index = (self.search_index + (-1 if backward else 1)) % len(self.search_matches)
+        row, start, end = self.search_matches[self.search_index]
+        self.match_count.setText(f'{self.search_index + 1} / {len(self.search_matches)} matches')
+        if self.current_mode == 0:
+            self.table.setCurrentCell(row, 2)
+            self.table.scrollToItem(self.table.item(row, 2))
         else:
-            count = self.table.rowCount()
-            for step in range(count):
-                row = (self.table.currentRow() + 1 + step) % count
-                if needle.casefold() in self.table.item(row, 2).text().casefold():
-                    self.table.setCurrentCell(row, 2)
-                    self.table.scrollToItem(self.table.item(row, 2))
-                    break
+            text = self.editor.toPlainText()
+            cursor = QTextCursor(self.editor.document())
+            cursor.setPosition(len(text[:start].encode('utf-16-le')) // 2)
+            cursor.setPosition(len(text[:end].encode('utf-16-le')) // 2, QTextCursor.MoveMode.KeepAnchor)
+            self.editor.setTextCursor(cursor)
+            self.editor.ensureCursorVisible()
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self.find_text and event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.find(backward=True)
+            return True
+        return super().eventFilter(obj, event)
 
     def replace_all(self):
         if not self.editable or not self.find_text.text() or not self.transcript:
@@ -237,6 +334,8 @@ class TranscriptView(QWidget):
                 segment.text = text
                 segment.words = []
                 segment.confidence = None
+                segment.avg_logprob = None
+                segment.tokens = []
         self.render()
         self.changed.emit()
 

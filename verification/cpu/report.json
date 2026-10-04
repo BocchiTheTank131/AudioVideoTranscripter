@@ -5,7 +5,7 @@
     "id": 0,
     "gpu": false,
     "memory_total": 34185383936,
-    "memory_free": 16048062464
+    "memory_free": 17079689216
   },
   "duration": 21.725875,
   "language": "en",
@@ -16,7 +16,7 @@
     "application runs speech",
     "runs speech recognition",
     "speech recognition entirely",
-    "recordings stay private",
+    "recording stay private",
     "export subtitles foucan",
     "subtitles foucan provides",
     "foucan provides acceleration",
@@ -32,10 +32,13 @@
     "Building transcript",
     "Exporting"
   ],
-  "gui_timer_ticks": 74,
-  "max_gui_timer_gap_seconds": 0.062,
+  "gui_timer_ticks": 177,
+  "max_gui_timer_gap_seconds": 0.093,
   "models": [
-    "ggml-base.bin"
+    "ggml-base.bin",
+    "ggml-large-v3-turbo.bin",
+    "ggml-medium.bin",
+    "ggml-small.bin"
   ],
   "export_formats": 8,
   "offline": true,

@@ -29,6 +29,18 @@ class Settings:
     diversity: float = 0.5
     timestamp_export: bool = True
     speaker_export: bool = True
+    vad: bool = True
+    auto_clean: bool = False
+    merge_short: bool = False
+    merge_gap: float = .5
+    subtitle_chars: int = 84
+    preset: str = 'custom'
+    follow_live: bool = True
+    show_confidence: bool = False
+    export_segmentation: str = 'cleaned'
+    subtitle_font: int = 20
+    subtitle_margin: int = 16
+    subtitle_lines: int = 2
 
     @classmethod
     def load(cls, path):

@@ -60,36 +60,42 @@ static void probe() {
     emit(out + "]}");
 }
 
-struct Callbacks { double offset = 0, duration = 0, total = 0; bool words = false; std::string last_text; };
+struct Callbacks { double offset = 0, duration = 0, total = 0, processed = 0; bool words = false; std::string last_text; };
+static void emit_progress(Callbacks &c, double position) {
+    // VAD padding can overlap intervals; already processed source time never regresses.
+    c.processed = std::max(c.processed, std::min(c.total, position));
+    emit("{\"event\":\"progress\",\"processed\":" + std::to_string(c.processed) +
+         ",\"total\":" + std::to_string(c.total) + "}");
+}
 static void progress(whisper_context *, whisper_state *, int percent, void *userdata) {
     auto &c = *static_cast<Callbacks *>(userdata);
-    emit("{\"event\":\"progress\",\"processed\":" + std::to_string(c.offset + c.duration * percent / 100.0) +
-         ",\"total\":" + std::to_string(c.total) + "}");
+    emit_progress(c, c.offset + c.duration * std::clamp(percent, 0, 100) / 100.0);
 }
 static void segments(whisper_context *ctx, whisper_state *, int count, void *userdata) {
     auto &c = *static_cast<Callbacks *>(userdata);
     int end = whisper_full_n_segments(ctx);
     for (int i = end - count; i < end; ++i) {
         double start = c.offset + whisper_full_get_segment_t0(ctx, i) / 100.0;
-        double stop = std::min(c.total, c.offset + whisper_full_get_segment_t1(ctx, i) / 100.0);
+        double stop = std::min({c.total, c.offset + c.duration, c.offset + whisper_full_get_segment_t1(ctx, i) / 100.0});
         std::string text = whisper_full_get_segment_text(ctx, i);
         c.last_text = text;
         std::string tokens = "[";
-        double probability = 0; int nprob = 0;
+        double probability = 0, logprob = 0; int nprob = 0;
         for (int j = 0; j < whisper_full_n_tokens(ctx, i); ++j) {
             auto t = whisper_full_get_token_data(ctx, i, j);
             if (t.id >= whisper_token_eot(ctx)) continue;
-            probability += t.p; ++nprob;
-            if (!c.words) continue;
+            probability += t.p; logprob += std::log(std::max(double(t.p), 1e-10)); ++nprob;
             if (tokens.size() > 1) tokens += ',';
             std::string token_text = whisper_full_get_token_text(ctx, i, j);
             tokens += "{\"text\":" + quote(token_text) + ",\"bytes_hex\":" + quote(hex_bytes(token_text)) +
-                ",\"start\":" + (t.t0 >= 0 ? std::to_string(c.offset + t.t0 / 100.0) : "null") +
-                ",\"end\":" + (t.t1 >= 0 ? std::to_string(std::min(c.total, c.offset + t.t1 / 100.0)) : "null") +
+                ",\"id\":" + std::to_string(t.id) +
+                ",\"start\":" + (c.words && t.t0 >= 0 ? std::to_string(c.offset + t.t0 / 100.0) : "null") +
+                ",\"end\":" + (c.words && t.t1 >= 0 ? std::to_string(std::min(c.total, c.offset + t.t1 / 100.0)) : "null") +
                 ",\"probability\":" + std::to_string(t.p) + "}";
         }
         emit("{\"event\":\"segment\",\"start\":" + std::to_string(start) + ",\"end\":" + std::to_string(stop) +
              ",\"text\":" + quote(text) + ",\"confidence\":" + (nprob ? std::to_string(probability / nprob) : "null") +
+             ",\"avg_logprob\":" + (nprob ? std::to_string(logprob / nprob) : "null") +
              ",\"no_speech_probability\":" + std::to_string(whisper_full_get_segment_no_speech_prob(ctx, i)) +
              ",\"tokens\":" + tokens + "]}");
     }
@@ -176,6 +182,9 @@ int main(int argc, char **argv) {
         params.temperature = std::stof(args["--temperature"]);
         params.translate = args["--translate"] == "1";
         params.suppress_nst = args["--suppress"] == "1";
+        params.no_context = true; // Never carry a stuck decoder state between chunks.
+        params.no_speech_thold = .6f;
+        params.logprob_thold = -1.0f;
         std::string lang = args["--language"];
         if (lang != "auto" && whisper_lang_id(lang.c_str()) < 0) throw std::runtime_error("Unsupported language");
         if (!whisper_is_multilingual(ctx.get())) lang = "en";
@@ -184,6 +193,15 @@ int main(int argc, char **argv) {
         params.token_timestamps = callbacks.words;
         params.new_segment_callback = segments; params.new_segment_callback_user_data = &callbacks;
         params.progress_callback = progress; params.progress_callback_user_data = &callbacks;
+        std::unique_ptr<whisper_vad_context, decltype(&whisper_vad_free)> vad(nullptr, whisper_vad_free);
+        if (!args["--vad-model"].empty()) {
+            auto vp = whisper_vad_default_context_params(); vp.n_threads = params.n_threads; vp.use_gpu = false;
+            // Use the loader interface to preserve Unicode file paths on Windows.
+            std::ifstream vf(std::filesystem::u8path(args["--vad-model"]), std::ios::binary);
+            whisper_model_loader vl; vl.context = &vf; vl.read = loader.read; vl.eof = loader.eof; vl.close = loader.close;
+            vad.reset(vf ? whisper_vad_init_with_params(&vl, vp) : nullptr);
+            if (!vad) emit("{\"event\":\"warning\",\"message\":\"VAD initialization failed; continued without speech detection.\"}");
+        }
         uint64_t done = 0;
         std::vector<int16_t> pcm(300 * 16000);
         std::vector<float> samples; samples.reserve(pcm.size());
@@ -205,13 +223,34 @@ int main(int argc, char **argv) {
             samples.resize(count);
             for (size_t i = 0; i < count; ++i) samples[i] = pcm[i] / 32768.0f;
             callbacks.offset = done / 16000.0; callbacks.duration = count / 16000.0;
-            std::string prompt = callbacks.last_text; params.initial_prompt = prompt.empty() ? nullptr : prompt.c_str();
-            if (whisper_full(ctx.get(), params, samples.data(), int(count))) throw std::runtime_error("Whisper inference failed. Check the backend log.");
-            if (lang == "auto") { lang = whisper_lang_str(whisper_full_lang_id(ctx.get())); params.language = lang.c_str(); }
+            std::vector<std::pair<size_t, size_t>> spans;
+            if (vad) {
+                auto vp = whisper_vad_default_params(); vp.max_speech_duration_s = 60.0f; vp.speech_pad_ms = 200;
+                std::unique_ptr<whisper_vad_segments, decltype(&whisper_vad_free_segments)> found(
+                    whisper_vad_segments_from_samples(vad.get(), vp, samples.data(), int(count)), whisper_vad_free_segments);
+                if (!found) throw std::runtime_error("VAD inference failed. Disable VAD and retry.");
+                for (int i = 0; i < whisper_vad_segments_n_segments(found.get()); ++i) {
+                    // The public VAD segment API uses centiseconds.
+                    size_t a = std::min<size_t>(count, size_t(std::max(0.0f, whisper_vad_segments_get_segment_t0(found.get(), i)) * 160));
+                    size_t b = std::min<size_t>(count, size_t(std::max(0.0f, whisper_vad_segments_get_segment_t1(found.get(), i)) * 160));
+                    if (b > a) spans.push_back({a, b});
+                }
+                emit("{\"event\":\"vad\",\"speech_spans\":" + std::to_string(spans.size()) + "}");
+            } else spans.push_back({0, size_t(count)});
+            for (auto span : spans) {
+                callbacks.offset = (done + span.first) / 16000.0;
+                callbacks.duration = (span.second - span.first) / 16000.0;
+                params.initial_prompt = nullptr;
+                if (whisper_full(ctx.get(), params, samples.data() + span.first, int(span.second - span.first))) throw std::runtime_error("Whisper inference failed. Check the backend log.");
+                if (lang == "auto") {
+                    lang = whisper_lang_str(whisper_full_lang_id(ctx.get())); params.language = lang.c_str();
+                    emit("{\"event\":\"language\",\"language\":" + quote(lang) + "}");
+                }
+            }
             done += count;
-            emit("{\"event\":\"progress\",\"processed\":" + std::to_string(done / 16000.0) + ",\"total\":" + std::to_string(callbacks.total) + "}");
+            emit_progress(callbacks, done / 16000.0);
         }
-        emit("{\"event\":\"done\",\"language\":" + quote(lang) + ",\"duration\":" + std::to_string(callbacks.total) + "}");
+        emit("{\"event\":\"done\",\"language\":" + quote(lang == "auto" ? "und" : lang) + ",\"duration\":" + std::to_string(callbacks.total) + "}");
         return 0;
     } catch (const std::exception &error) {
         emit("{\"event\":\"error\",\"message\":" + quote(error.what()) + "}");

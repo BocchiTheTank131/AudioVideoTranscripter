@@ -5,8 +5,20 @@ import shutil
 import subprocess
 import sys
 import argparse
+import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+from utils.version import VERSION
+
+
+def clean_staging(path):
+    path = path.resolve()
+    if not path.is_relative_to((ROOT / 'build/runtime').resolve()):
+        raise RuntimeError('Runtime staging path is outside the build workspace.')
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
 
 
 def main():
@@ -16,6 +28,8 @@ def main():
     parser.add_argument('--onefile', action='store_true', help='Embed runtimes in one self-extracting executable')
     options = parser.parse_args()
     name = 'LocalTranscriberDebug' if options.console else 'LocalTranscriber'
+    if os.name == 'nt' and not (ROOT / 'backends/cpu/local-whisper.exe').is_file():
+        raise SystemExit('Build the CPU backend first: python scripts/build_backend.py cpu')
     args = [sys.executable, '-m', 'PyInstaller.utils.cliutils.makespec', '--console' if options.console else '--windowed', '--onefile' if options.onefile else '--onedir',
             '--name', name, '--paths', str(ROOT / 'src'),
             '--add-data', f'{ROOT / "src/transcription/catalog.json"}{os.pathsep}transcription',
@@ -25,18 +39,24 @@ def main():
             '--exclude-module', 'PySide6.QtWebEngineCore', '--exclude-module', 'PySide6.QtWebEngineWidgets',
             '--exclude-module', 'PySide6.QtQml', '--exclude-module', 'PySide6.QtQuick',
             '--exclude-module', 'pytest']
+    if os.name == 'nt':
+        version_file = ROOT / 'build/version_info.txt'
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        numbers = tuple(int(v) for v in VERSION.split('.')) + (0,)
+        version_file.write_text(f"VSVersionInfo(ffi=FixedFileInfo(filevers={numbers!r}, prodvers={numbers!r}, mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)), kids=[StringFileInfo([StringTable('040904B0', [StringStruct('FileDescription','Local Transcriber'), StringStruct('ProductName','Local Transcriber'), StringStruct('FileVersion',{VERSION!r}), StringStruct('ProductVersion',{VERSION!r})])]), VarFileInfo([VarStruct('Translation',[1033,1200])])])", 'utf-8')
+        args += ['--version-file', str(version_file)]
     for backend_name in ('cpu', 'vulkan', 'cuda', 'hip'):
         source = ROOT / 'backends' / backend_name
         if source.exists():
             # Only runtime files; CMake development libraries are not shipped.
             staging = ROOT / 'build' / 'runtime' / backend_name
-            staging.mkdir(parents=True, exist_ok=True)
+            clean_staging(staging)
             for path in source.iterdir():
                 if path.is_file() and path.suffix in ('.exe', '.dll', '.so', '.dylib', '.txt'):
                     shutil.copy2(path, staging / path.name)
             args += ['--add-data', f'{staging}{os.pathsep}backends/{backend_name}']
     tools = ROOT / 'build' / 'runtime' / 'tools'
-    tools.mkdir(parents=True, exist_ok=True)
+    clean_staging(tools)
     if options.bundle_ffmpeg:
         for tool_name in ('ffmpeg', 'ffprobe'):
             source = shutil.which(tool_name)
@@ -53,7 +73,11 @@ def main():
         args += ['--add-data', f'{ROOT / notice}{os.pathsep}.']
     # Source of optional subprocess modules, runnable in an external Python env.
     for folder in ('diarization', 'keywords'):
-        args += ['--add-data', f'{ROOT / "src" / folder}{os.pathsep}src/{folder}']
+        workers = ROOT / 'build/runtime' / ('worker-' + folder)
+        clean_staging(workers)
+        for worker in (ROOT / 'src' / folder).glob('*.py'):
+            shutil.copy2(worker, workers / worker.name)
+        args += ['--add-data', f'{workers}{os.pathsep}src/{folder}']
     args += [str(ROOT / 'src/app.py')]
     subprocess.run(args, cwd=ROOT, check=True)
     # Filter before archiving: deleting files after a build cannot repair onefile.
@@ -70,7 +94,15 @@ a.datas = [entry for entry in a.datas if keep_runtime(entry)]
         spec.write_text(spec.read_text('utf-8').replace('pyz = PYZ(a.pure)', filtering + '\npyz = PYZ(a.pure)'), 'utf-8')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', str(spec)], cwd=ROOT, check=True)
     if options.onefile:
-        print(f'Single executable: {ROOT / "dist" / (name + ".exe")}')
+        artifact = ROOT / 'dist' / (name + '.exe')
+        if not artifact.is_file():
+            raise SystemExit('Packaging completed without producing the executable.')
+        digest = hashlib.sha256()
+        with artifact.open('rb') as stream:
+            while data := stream.read(4 * 1024**2):
+                digest.update(data)
+        artifact.with_suffix('.exe.sha256').write_text(digest.hexdigest() + '  ' + artifact.name + '\n', 'ascii')
+        print(f'Single executable: {artifact} ({VERSION})')
         return
     destination = ROOT / 'dist' / name
     if os.name == 'nt':

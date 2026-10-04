@@ -2,6 +2,26 @@
 
 A Windows-first PySide6 desktop app for private video and audio transcription with **whisper.cpp**. Media, audio, text, keywords and speaker information stay on your computer. There is no transcription API, account requirement for Whisper, or telemetry. The default model is **base**.
 
+## Reliability and long-recording workflow (v1.1)
+
+Suspicious cues show a warning beside their timestamp, with reasons and model statistics in tooltips. **Show confidence** displays the mean recognized-token probability, not a calibrated accuracy score; unavailable statistics show N/A. Repetition heuristics work with whitespace-free scripts such as Thai. Low confidence, high no-speech probability, compression and consecutive duplicates flag cues for review. Text stays intact by default. **Automatically clean obvious hallucinations** requires both pathological repetition and corroborating low log probability/high no-speech probability; it retries once with greedy decoding, removes persistent repetition only in this opt-in mode, and preserves the original cues in projects/JSON. Heuristics can flag legitimate repeated speech: always review the source.
+
+**Voice activity detection** is enabled by default. Install its verified ~0.9 MB local Silero model from Advanced features or approve the first-use setup dialog. Missing/unavailable VAD leaves ordinary transcription available; nothing downloads at startup. VAD identifies speech activity, not every kind of music or noise, and can omit difficult/quiet speech. The native bridge processes bounded audio chunks and preserves source-time offsets for speech intervals. Decoding starts with fresh context to avoid propagating stuck text.
+
+The track selector explicitly labels **Metadata language**; **Detected speech** separately shows Whisper's result. Container tags never set the requested transcription language. **Follow live transcription** stops following when you scroll up and resumes near the bottom. Find supports highlighted matches, previous/next, a match counter, Enter and Shift+Enter.
+
+**Preview** opens a local player with playback, seek, volume and edited subtitle overlays. Click a cue timestamp to seek; double-click still opens cue timing edits. Subtitle font, margin and line count are adjustable in the preview. Playback is optional and never changes the source media. Unsupported codecs leave transcription available.
+
+**File → Save Project / Save Project As / Open Project** uses `.ltproj` files containing settings, edited cues, words, raw recognized cues, speakers, keywords and quality metadata. Projects reference media; they do not embed it. A moved file can be located again. Opening a project restores its transcript without inference. Ctrl+S saves a project, Ctrl+Shift+S saves as, Ctrl+O opens media, Ctrl+F/Ctrl+H focus search/replace, Ctrl+E exports; Space toggles playback outside text-entry controls.
+
+Settings → Transcription offers short-cue merging (speaker/gap/punctuation/character limits). Exports can use cleaned cues or original boundaries with edits overlaid. Raw recognized text is preserved independently. Presets adapt to available memory: Fast uses beam 1; Balanced/Accurate use beam 5, with word timing for Accurate. CPU recommends Base, larger GPUs recommend Turbo/Medium. Presets never download on selection; missing models require approval at Start. Custom retains manual choices; memory advisories do not impose limits.
+
+**History** records local job filenames, model/language/device, duration, elapsed time, throughput, sampled memory peaks and completion/cancel/failure status. It never stores transcript content. Clear history and CSV export are available. RAM peaks include the app and child processes; GPU readings can include other applications and sampling can miss brief peaks. `× realtime` is media duration divided by processing time, including preprocessing/postprocessing in history.
+
+Drop multiple files or use **Batch** to queue serial jobs. Each job keeps its own options and saves a project plus TXT/SRT/VTT in a new application-data `projects/batch-*` folder, with collision-resistant names. Pause queue finishes the current job and waits; Cancel current terminates it and pauses the queue. Failed jobs can be retried/removed and completed jobs cleared. Model files are reused from cache; native model allocations are released per job rather than kept resident between files, so resources are bounded and cancellation remains reliable.
+
+Models now show installed and SHA-256 verification state, last verification, full-path tooltips and folder access. Hashes are still checked on every use. Advanced features can install diarization/keyword dependencies into application-data `runtime/optional-env`, using a verified uv installer and managed Python 3.12. These explicit installs can download several GB; optional AI model weights are separate opt-in downloads. Manual environment/model fields remain available. Hardware → Copy diagnostics omits transcript text, tokens and personal source paths. Error dialogs keep the summary short with technical details available separately and complete logs local.
+
 ## Screenshots
 
 ![Desktop application](verification/cpu/application.png)
@@ -62,7 +82,7 @@ Exports do not write back to your source media. Transcripts are held in memory u
 
 Video: MP4, MKV, MOV, AVI, WebM, M4V, MPEG/MPG. Audio: WAV, MP3, FLAC, M4A, AAC, OGG, Opus and WMA. Actual codec support depends on your FFmpeg build. Browse's “All files” option allows other FFmpeg-supported containers. Missing/corrupted files, absent audio, invalid tracks and decoder failures produce GUI errors and technical logs.
 
-Normalization writes mono 16 kHz PCM16 WAV into an application cache directory. RF64 is supported for long files. The source video is never duplicated. The native bridge reads at most five minutes of PCM at once and seeks a quiet cut near each chunk boundary, reusing the loaded Whisper model and carrying the previous segment as a prompt. Speech can still straddle chunk boundaries; inspect the result for critical uses. The main GUI process does not hold decoded audio buffers. Core model resources are released when the child process exits.
+Normalization writes mono 16 kHz PCM16 WAV into an application cache directory. RF64 is supported for long files. The source video is never duplicated. The native bridge reads at most five minutes of PCM at once and seeks a quiet cut near each chunk boundary, reusing the loaded Whisper model with fresh decoding context. With VAD, it decodes padded speech intervals within those chunks. Speech can still straddle boundaries; inspect the result for critical uses. The main GUI process does not hold decoded audio buffers. Core model resources are released when the child process exits.
 
 ## Models and storage
 

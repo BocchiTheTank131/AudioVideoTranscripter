@@ -32,7 +32,8 @@ def test_default_is_base_and_only_requested_downloads(tmp_path, catalog, monkeyp
     manager = ModelManager(tmp_path)
     manager.ensure('test', Cancellation(), lambda _: None)
     assert calls == ['https://example.test/model']
-    assert [p.name for p in tmp_path.iterdir()] == ['test.bin']
+    assert [p.name for p in tmp_path.glob('*.bin')] == ['test.bin']
+    assert manager.verification_state('test')['valid']
 
 
 def test_offline_cache_and_corruption(tmp_path, catalog, monkeypatch):

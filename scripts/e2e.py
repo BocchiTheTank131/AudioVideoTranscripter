@@ -11,12 +11,16 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
     parser.add_argument('media', type=Path)
     parser.add_argument('--backend', default='cpu', choices=['auto', 'cpu', 'vulkan', 'cuda', 'hip'])
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--translate', action='store_true')
     parser.add_argument('--theme', default='dark', choices=['light', 'dark'])
+    parser.add_argument('--model', default='base')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--expected-language')
     args = parser.parse_args()
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     from PySide6.QtCore import QTimer, Qt, QMimeData, QUrl, QPoint, QPointF
@@ -73,7 +77,7 @@ def main():
     app.sendEvent(window.drop, drop)
     until(lambda: window.job is None and window.media is not None)
     assert window.media.streams and window.media.duration > 0
-    window.model.setCurrentIndex(window.model.findData('base'))
+    window.model.setCurrentIndex(window.model.findData(args.model))
     window.acceleration.setCurrentIndex(window.acceleration.findData(args.backend))
     window.words.setChecked(True)
     if args.translate:
@@ -85,13 +89,16 @@ def main():
     assert not errors, errors
     transcript = window.result
     text = ' '.join(segment.text for segment in transcript.segments).casefold()
-    assert 'local' in text and 'private' in text, text
+    if args.media.name == 'sample.mp4':
+        assert 'local' in text and 'private' in text, 'Expected reference speech absent'
+    if args.expected_language:
+        assert transcript.language == args.expected_language
     assert transcript.backend == args.backend or args.backend == 'auto'
     assert transcript.keywords
     assert any(segment.words for segment in transcript.segments), 'Word timestamps absent'
     first = window.viewer.table.item(0, 2)
     first.setText('Edited: ' + first.text())
-    directory = ROOT / 'verification' / (args.backend + ('-translation' if args.translate else ''))
+    directory = args.output or ROOT / 'verification' / (args.backend + ('-translation' if args.translate else ''))
     directory.mkdir(parents=True, exist_ok=True)
     QFileDialog.getExistingDirectory = lambda *a, **kw: str(directory)
     QMessageBox.question = lambda *a, **kw: QMessageBox.StandardButton.Yes

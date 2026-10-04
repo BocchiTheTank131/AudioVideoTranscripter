@@ -4,6 +4,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
+from copy import deepcopy
+from dataclasses import asdict, replace
 from diarization.alignment import align_speakers
 from hardware.detection import choose
 from keywords.extraction import frequency_keywords
@@ -12,6 +14,11 @@ from translation.tasks import validate_task
 from utils.process import run_json_worker
 from utils.types import AppError, Cancelled, Transcript
 from .whisper_cpp import WhisperCppBackend
+from .quality import analyse, repetitive, obvious_hallucination
+from .cleanup import merge_segments
+from .vad import valid as vad_valid
+from media.ffmpeg import find_tool
+from utils.process import run_stream
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +30,12 @@ def transcribe(path, options, paths, settings, manager, backends, cancel, on_eve
     temporary_root.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix='job-', dir=temporary_root))
     engine = WhisperCppBackend(backend, cancel)
+    warnings = []
+    if options.vad and not vad_valid(options.vad_path or paths.models / 'vad' / 'ggml-silero-v6.2.0.bin'):
+        options = replace(options, vad=False, vad_path='')
+        warnings.append('VAD model is unavailable. Continued without speech detection; install VAD in Settings → Advanced features.')
+    elif options.vad:
+        options = replace(options, vad_path=options.vad_path or str(paths.models / 'vad' / 'ggml-silero-v6.2.0.bin'))
     try:
         on_event({'stage': 'Inspecting media', 'overall': 0})
         info = inspect(path, cancel)
@@ -50,6 +63,9 @@ def transcribe(path, options, paths, settings, manager, backends, cancel, on_eve
             engine.unload()
         transcript = Transcript(info.path, options.model, output['language'], output['duration'], output['segments'],
                                 task=options.task, backend=backend.name)
+        transcript.warnings.extend(warnings + output.get('warnings', []))
+        transcript.transcription_settings = asdict(options)
+        analyse(transcript.segments)
         if not transcript.segments:
             transcript.warnings.append('No speech was recognized in the selected audio track.')
         # Save a core checkpoint before running any optional feature.
@@ -72,6 +88,60 @@ def transcribe(path, options, paths, settings, manager, backends, cancel, on_eve
             except Exception as exc:
                 log.exception('Optional diarization failed')
                 transcript.warnings.append('Speaker diarization could not complete. The transcript is available. Check optional dependencies, the local Community-1 model and FFmpeg/torchcodec. ' + str(exc)[:300])
+        cancel.check()
+        # Keep exact recognized cues before any optional cleanup, including flags.
+        for index, segment in enumerate(transcript.segments):
+            segment.source_ids = [index]
+        transcript.raw_segments = deepcopy(transcript.segments)
+        removed, retried = [], []
+        if options.auto_clean:
+            on_event({'stage': 'Reviewing pathological repetition', 'overall': None})
+            with manager.lease(options.model):
+                engine.load_model(model, replace(options, beam_size=1, temperature=0.0, vad=False))
+                cleaned = []
+                try:
+                    for index, segment in enumerate(transcript.segments):
+                        cancel.check()
+                        if not obvious_hallucination(segment):
+                            cleaned.append(segment)
+                            continue
+                        # One retry per obvious repetition; never delete ordinary low confidence.
+                        retry_audio = directory / 'retry.wav'
+                        run_stream([find_tool('ffmpeg'), '-hide_banner', '-nostdin', '-v', 'error', '-y', '-ss', str(segment.start),
+                                    '-i', str(audio), '-t', str(max(.1, segment.end - segment.start)), '-c:a', 'pcm_s16le', str(retry_audio)], cancel)
+                        retried.append(index)
+                        try:
+                            retry = engine.transcribe(retry_audio, lambda e: None)['segments']
+                            if retry and not any(repetitive(s.text) for s in retry):
+                                for cue in retry:
+                                    cue.start = min(segment.end, cue.start + segment.start)
+                                    cue.end = min(segment.end, cue.end + segment.start)
+                                    for token in cue.tokens:
+                                        for k in ('start', 'end'):
+                                            if token.get(k) is not None:
+                                                token[k] = min(segment.end, token[k] + segment.start)
+                                    for word in cue.words:
+                                        for k in ('start', 'end'):
+                                            if word.get(k) is not None:
+                                                word[k] = min(segment.end, word[k] + segment.start)
+                                    cue.speaker, cue.source_ids = segment.speaker, [index]
+                                cleaned.extend(retry)
+                            else:
+                                removed.append(index)
+                        except Cancelled:
+                            raise
+                        except Exception:
+                            log.exception('Hallucination retry failed; retaining recognized cue')
+                            transcript.warnings.append('A repetition retry failed; the flagged original cue was retained.')
+                            cleaned.append(segment)
+                        retry_audio.unlink(missing_ok=True)
+                finally:
+                    engine.unload()
+            transcript.segments = cleaned
+        transcript.cleanup = dict(removed_original_ids=removed, retried_original_ids=retried,
+                                  merge_enabled=options.merge_short, merge_gap=options.merge_gap, subtitle_chars=options.subtitle_chars)
+        if options.merge_short:
+            transcript.segments = merge_segments(transcript.segments, options.merge_gap, options.subtitle_chars)
         cancel.check()
         if options.keywords:
             on_event({'stage': 'Extracting keywords', 'overall': None})
